@@ -14,7 +14,8 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Falta configurar GEMINI_API_KEY en Vercel (Settings → Environment Variables).' });
   }
 
-  const { prompt, json = false, audio = null, mime = 'audio/wav' } = req.body || {};
+  const { prompt, json = false, audio = null, mime = 'audio/wav', tts = null } = req.body || {};
+  if (tts) return speak(tts, key, res);
   if (typeof prompt !== 'string' || !prompt.trim()) {
     return res.status(400).json({ error: 'Falta el pedido.' });
   }
@@ -64,4 +65,64 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(502).json({ error: 'No se pudo conectar con la IA. Probá de nuevo en un rato.' });
   }
+}
+
+// ---------- Texto a voz: crea audio real (WAV) con las voces de Gemini ----------
+// Recibe { lines: [{ speaker, text }] } con hasta ~600 caracteres por pedido
+// y devuelve { audio: base64 PCM 16 bits, rate }.
+const VOICES = { 'Sofi': 'Kore', 'Martín': 'Puck', 'Narradora': 'Kore' };
+const TTS_MODELS = [
+  process.env.GEMINI_TTS_MODEL,
+  'gemini-3.8-flash-lite-tts',
+  'gemini-3.8-flash-tts',
+  'gemini-3.1-flash-tts-preview',
+  'gemini-2.5-flash-preview-tts'
+].filter(Boolean);
+
+async function speak(tts, key, res) {
+  const lines = Array.isArray(tts.lines) ? tts.lines.filter(l => l && typeof l.text === 'string' && l.text.trim()) : [];
+  const total = lines.reduce((n, l) => n + l.text.length, 0);
+  if (!lines.length) return res.status(400).json({ error: 'No hay texto para convertir en audio.' });
+  if (total > 1500) return res.status(413).json({ error: 'Fragmento demasiado largo para el audio.' });
+
+  const speakers = [...new Set(lines.map(l => String(l.speaker || 'Narradora')))].slice(0, 2);
+  const voiceOf = (s, i) => VOICES[s] || ['Kore', 'Puck'][i] || 'Kore';
+  let text, speechConfig;
+  if (speakers.length > 1) {
+    text = 'Leé este diálogo de un podcast educativo uruguayo, con acento rioplatense, tono cálido, natural y con buen ritmo:\n\n' +
+      lines.map(l => `${l.speaker}: ${l.text}`).join('\n');
+    speechConfig = { multiSpeakerVoiceConfig: { speakerVoiceConfigs: speakers.map((s, i) => ({ speaker: s, voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceOf(s, i) } } })) } };
+  } else {
+    text = 'Leé el siguiente texto en español con acento rioplatense, tono cálido y claro, como quien explica algo a una compañera:\n\n' +
+      lines.map(l => l.text).join('\n');
+    speechConfig = { voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceOf(speakers[0], 0) } } };
+  }
+  const body = JSON.stringify({
+    contents: [{ role: 'user', parts: [{ text }] }],
+    generationConfig: { responseModalities: ['AUDIO'], speechConfig }
+  });
+
+  let last = 'No se pudo crear el audio.';
+  for (const model of TTS_MODELS) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 429) return res.status(429).json({ error: 'Llegamos al límite gratis de audio por ahora.' });
+      if (!r.ok) {
+        last = (data.error && data.error.message) || `Error ${r.status} al crear el audio.`;
+        if (r.status === 404 || r.status === 400) continue; // modelo no disponible: probamos el siguiente
+        return res.status(502).json({ error: last });
+      }
+      const part = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+      const inline = part.map(p => p.inlineData || p.inline_data).find(Boolean);
+      if (!inline || !inline.data) { last = 'La IA no devolvió audio.'; continue; }
+      const m = /rate=(\d+)/.exec(inline.mimeType || inline.mime_type || '');
+      return res.status(200).json({ audio: inline.data, rate: m ? +m[1] : 24000, model });
+    } catch (e) {
+      last = 'No se pudo conectar con la IA para crear el audio.';
+    }
+  }
+  return res.status(502).json({ error: last });
 }

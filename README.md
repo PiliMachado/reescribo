@@ -8,7 +8,8 @@ Versión beta. Funciona 100 % gratis:
 |---|---|---|
 | IA (resúmenes, cuestionarios, etc.) | Gemini, plan gratis de Google AI Studio | Gratis, sin tarjeta |
 | Transcripción de audios | Gemini (el audio se manda en partes de 1 minuto) | Gratis |
-| Voz de "Escuchar" | La voz que trae el navegador | Gratis |
+| Audio del podcast y del resumen | Voces de Gemini (texto a voz), se descarga como .wav | Gratis |
+| Vista previa rápida | La voz que trae el navegador | Gratis |
 | Hosting | Vercel, plan Hobby | Gratis |
 
 ---
@@ -47,11 +48,13 @@ vercel.json   → le da hasta 60 segundos a cada pedido de IA
 - **PDF** se lee con pdf.js y **DOCX** con mammoth, directo en el navegador.
 - **Audios**: se pasan a 16 kHz mono, se cortan en partes de 1 minuto y cada parte se transcribe con Gemini. Hasta 45 minutos por archivo.
 - **Grabar clase**: graba con el micrófono y al tocar Detener transcribe automáticamente.
+- **Crear audio**: el guion del podcast (Sofi y Martín) o el resumen se mandan en partes a la voz de Gemini, se unen en un solo .wav, se guardan en el navegador (IndexedDB) y se pueden descargar. Si un modelo de voz no está disponible, el backend prueba el siguiente; también se puede fijar uno con la variable `GEMINI_TTS_MODEL`.
 
 ## Límites del plan gratis
 - Gemini gratis tiene un máximo de pedidos por minuto y por día. Si se pasa, la web avisa y en los audios espera sola 30 segundos y sigue.
 - En el plan gratis, Google puede usar lo que se manda para mejorar sus productos: **no subir material privado o sensible**.
-- La voz del navegador cambia según el dispositivo (en Chrome y en celulares suele haber voces en español buenas).
+- Crear un audio de 3 minutos lleva varios pedidos; si se llega al límite por minuto, la web espera sola y sigue.
+- La vista previa con la voz del navegador cambia según el dispositivo.
 
 ## Probarla en tu compu
 Abrir `index.html` con doble clic no alcanza (la IA necesita el backend). Con [Node](https://nodejs.org) instalado:

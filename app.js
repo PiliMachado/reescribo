@@ -58,7 +58,8 @@ async function gen(view){
  stopAll();busy=key;const id=m.id;$('#gen').disabled=true;
  $('#out').innerHTML=`<div class="load"><span class="dots"></span>Generando ${LBL[key]}… puede tardar unos segundos.</div>`;
  try{const v=key==='resumen'?await GEN.resumen(m,$('#len').value):await GEN[key](m);
-  need(key!=='resumen'||v.trim());setOut(id,key,v);qs=gs=es=null;busy=null;render();
+  need(key!=='resumen'||v.trim());setOut(id,key,v);if(key==='podcast'||key==='resumen')dropAudio(id,key);qs=gs=es=null;busy=null;render();
+  if(key==='podcast'&&st.cur===id&&location.hash==='#audios')makeAudio('podcast',linesOf('podcast'));
  }catch(e){busy=null;const o=$('#out');if(o)o.innerHTML=`<p class="err">${esc(errText(e))}</p>`;const g=$('#gen');if(g)g.disabled=false}
 }
 const inl=s=>s.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
@@ -109,6 +110,36 @@ async function transcribe(blob,url,prog){
    catch(e){if(e.status===429&&a<4){prog('Llegamos al límite gratis por minuto: esperamos 30 segundos y seguimos…');await sleep(30000);continue}throw e}}}
  return out}
 
+/* ---------- crear audio real (voces de Gemini) ---------- */
+const idb=(()=>{let p;const open=()=>p||(p=new Promise((ok,ko)=>{const r=indexedDB.open('reescribo',1);r.onupgradeneeded=()=>r.result.createObjectStore('audio');r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error)}));
+ const tx=async(mode,fn)=>{const db=await open();return new Promise((ok,ko)=>{const t=db.transaction('audio',mode),q=fn(t.objectStore('audio'));t.oncomplete=()=>ok(q&&q.result);t.onerror=()=>ko(t.error)})};
+ return{get:k=>tx('readonly',s=>s.get(k)).catch(()=>null),set:(k,v)=>tx('readwrite',s=>s.put(v,k)).catch(()=>{}),del:k=>tx('readwrite',s=>s.delete(k)).catch(()=>{})}})();
+const aud={url:{},checked:{},job:null};
+function dropAudio(id,kind){const k=id+':'+kind;if(aud.url[k])URL.revokeObjectURL(aud.url[k]);delete aud.url[k];aud.checked[k]=true;idb.del(k)}
+function audioOf(kind){const k=st.cur+':'+kind;if(!aud.checked[k]){aud.checked[k]=true;idb.get(k).then(b=>{if(b){aud.url[k]=URL.createObjectURL(b);render()}})}return aud.url[k]}
+function pcmWav(bytes,rate){const b=new ArrayBuffer(44),v=new DataView(b),w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i))};
+ w(0,'RIFF');v.setUint32(4,36+bytes.length,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,bytes.length,true);
+ return new Blob([b,bytes],{type:'audio/wav'})}
+const fromB64=s=>{const bin=atob(s),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u};
+function groupLines(lines){const g=[];let c=[],n=0;for(const l of lines){for(const t of l.text.length>450?chunks(l.text):[l.text]){if(n+t.length>450&&c.length){g.push(c);c=[];n=0}c.push({speaker:l.speaker,text:t});n+=t.length}}if(c.length)g.push(c);return g}
+async function ttsRequest(lines){let r;try{r=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tts:{lines}})})}catch(e){throw new Error('No hay conexión con el servidor de reescribo.')}
+ let d={};try{d=await r.json()}catch(e){}if(!r.ok){const er=new Error(d.error||'Error '+r.status);er.status=r.status;throw er}return d}
+async function makeAudio(kind,lines){if(aud.job)return toast('Ya se está creando un audio, esperá que termine.');
+ const id=st.cur,k=id+':'+kind,groups=groupLines(lines);aud.job={k,msg:'Preparando el audio…'};render();
+ const set=t=>{aud.job.msg=t;const p=$('#amsg');if(p)p.textContent=t};
+ try{const parts=[];let rate=24000;
+  for(let i=0;i<groups.length;i++){set(`Creando el audio: parte ${i+1} de ${groups.length}…`);
+   for(let a=0;;a++){try{const d=await ttsRequest(groups[i]);rate=d.rate||rate;parts.push(fromB64(d.audio));break}
+    catch(e){if(e.status===429&&a<5){set('Llegamos al límite gratis por minuto: esperamos 40 segundos y seguimos…');await sleep(40000);continue}throw e}}}
+  const len=parts.reduce((n,p)=>n+p.length,0),all=new Uint8Array(len);let o=0;for(const p of parts){all.set(p,o);o+=p.length}
+  const blob=pcmWav(all,rate);await idb.set(k,blob);if(aud.url[k])URL.revokeObjectURL(aud.url[k]);aud.url[k]=URL.createObjectURL(blob);aud.checked[k]=true;
+  aud.job=null;toast('¡Audio listo!');render()
+ }catch(e){aud.job=null;toast(errText(e));render()}}
+function audioBox(kind,label){const fname=(kind==='podcast'?'Podcast - ':'Resumen - ')+(cur()?.title||'reescribo');const k=st.cur+':'+kind,url=audioOf(kind),job=aud.job&&aud.job.k===k;
+ if(job)return `<div class="abox"><div class="load"><span class="dots"></span><span id="amsg">${esc(aud.job.msg)}</span></div></div>`;
+ if(url)return `<div class="abox"><audio controls src="${url}"></audio><div class="row" style="margin:0"><a class="btn pri" href="${url}" download="${esc(fname)}.wav">Descargar audio</a><button id="mk" class="ghost">Volver a crear el audio</button></div></div>`;
+ return `<div class="abox"><button class="pri" id="mk">${label}</button><span class="note">Se crea con voces de IA y lo podés descargar.</span></div>`}
+
 /* ---------- material ---------- */
 function addMat(title,type,text){const id='m'+Date.now().toString(36);st.mats.unshift({id,title:title||'Material sin título',type,text,created:Date.now()});st.cur=id;save();return id}
 const loaded={};
@@ -156,10 +187,11 @@ textos(){if(!st.mats.length)return`<h1>Mis textos</h1><p class="sub">Acá se gua
  <form class="ask" id="ask"><input type="text" id="askIn" placeholder="Ej: ¿qué diferencia hay entre…?"><button class="pri">Preguntar</button></form></section>`:''}`},
 resumenes(){if(!st.mats.length)return`<h1>Resúmenes</h1>${emptyMats}`;const v=outOf('resumen');
  return `<h1>Resúmenes</h1><p class="sub">Lo esencial de tu material, ordenado para estudiar.</p>${matBar('resumenes','<label class="sm">Largo<select id="len"><option value="completo">Completo</option><option value="breve">Breve</option></select></label>')}
- <div id="out">${v?`<div class="row">${voiceOK()?'<button id="play" data-l="Escuchar resumen">Escuchar resumen</button><button id="stop" class="ghost" disabled>Detener</button>':''}<button id="copy">Copiar</button><button id="dl">Descargar</button></div><article class="md">${md(v)}</article>`:wait('Elegí el material y tocá Generar.')}</div>`},
+ <div id="out">${v?`${audioBox('resumen','Crear audio del resumen')}<div class="row"><button id="copy">Copiar</button><button id="dl">Descargar texto</button>${voiceOK()?'<button id="play" class="ghost" data-l="Escuchar con la voz del navegador">Escuchar con la voz del navegador</button><button id="stop" class="ghost" disabled>Detener</button>':''}</div><article class="md">${md(v)}</article>`:wait('Elegí el material y tocá Generar.')}</div>`},
 audios(){if(!st.mats.length)return`<h1>Audios</h1>${emptyMats}`;const p=outOf('podcast');
  return `<h1>Audios</h1><p class="sub">Un podcast de estudio con dos voces que te explica tu material.</p>${matBar('audios')}
- <div id="out">${p?`<div class="pod"><div class="podh"><b>${esc(p.titulo||'Podcast')}</b>${voiceOK()?`<div class="row" style="margin:0"><button class="pri" id="play" data-l="Reproducir">Reproducir</button><button id="stop" disabled>Detener</button><select id="rate" aria-label="Velocidad"><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="0.85">0.85x</option></select></div>`:noVoice}</div>
+ <div id="out">${p?`<div class="pod"><div class="podh"><b>${esc(p.titulo||'Podcast')}</b></div><div style="padding:0 16px">${audioBox('podcast','Crear audio del podcast')}</div>
+ ${voiceOK()?`<div class="row" style="padding:0 16px;margin:0"><button class="ghost" id="play" data-l="Vista previa con la voz del navegador">Vista previa con la voz del navegador</button><button id="stop" class="ghost" disabled>Detener</button><select id="rate" aria-label="Velocidad"><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="0.85">0.85x</option></select></div>`:''}
  <div class="lines">${p.lineas.map((l,i)=>`<div class="ln${l.voz==='B'?' b':''}" data-id="l${i}"><span>${l.voz==='B'?'Martín':'Sofi'}</span><div>${esc(l.texto)}</div></div>`).join('')}</div></div>`:wait('Tocá Generar y armamos un audio para escuchar donde quieras.')}</div>`},
 cuestionarios(){if(!st.mats.length)return`<h1>Cuestionarios</h1>${emptyMats}`;const q=outOf('quiz');
  return `<h1>Cuestionarios</h1><p class="sub">Practicá con preguntas y mirá por qué cada respuesta es correcta.</p>${matBar('cuestionarios')}<div id="out">${q?quizHTML(q):wait('Generá un cuestionario para ponerte a prueba.')}</div>`},
@@ -205,6 +237,7 @@ function drawStage(){const x=outOf('expl');if(!x||!$('#stage'))return;if(!es||es
  $('#pd').innerHTML=E.map((_,i)=>`<i class="${i===es.i?'on':''}"></i>`).join('');$('#cap').textContent=s.narracion||'';
  $('#prev').disabled=es.i===0;$('#next').disabled=es.i===E.length-1}
 
+const linesOf=kind=>kind==='podcast'?outOf('podcast').lineas.map(l=>({speaker:l.voz==='B'?'Martín':'Sofi',text:l.texto})):chunks(outOf('resumen')).map(text=>({speaker:'Narradora',text}));
 /* ---------- render + eventos ---------- */
 function go(h){if(location.hash.slice(1)===h)render();else location.hash=h}
 function render(){const v=V[location.hash.slice(1)]?location.hash.slice(1):'inicio';
@@ -226,6 +259,7 @@ function bind(v){
  const ms=$('#matSel');if(ms)ms.onchange=()=>{stopAll();st.cur=ms.value;save();render()};
  const g=$('#gen');if(g)g.onclick=()=>gen(v);
  const sb=$('#stop');if(sb)sb.onclick=ttsStop;
+ const mk=$('#mk');if(mk&&KEY[v])mk.onclick=()=>{ttsStop();makeAudio(KEY[v],linesOf(KEY[v]))};
  if(v==='inicio'){const dz=$('#drop');dz.onclick=e=>{e.preventDefault();$('#file').click()};dz.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('#file').click()}};
   dz.ondragover=e=>{e.preventDefault();dz.classList.add('over')};dz.ondragleave=()=>dz.classList.remove('over');dz.ondrop=e=>{e.preventDefault();dz.classList.remove('over');const f=e.dataTransfer.files[0];if(f)readFile(f)};
   $('#pasteBtn').onclick=()=>{$('#pasteBox').innerHTML=`<section class="paste"><h2>Pegar texto</h2><input type="text" id="pT" placeholder="Título (ej: Unidad 3 · Comunicación organizacional)" style="width:100%;margin:8px 0"><textarea id="pX" placeholder="Pegá acá tus apuntes, un texto o un capítulo."></textarea><div class="row"><button class="pri" id="pS">Guardar material</button><button class="ghost" id="pC">Cancelar</button></div></section>`;
@@ -236,9 +270,9 @@ function bind(v){
    $('#tcancel').onclick=()=>{if(recorder&&recorder.state==='recording'){recorder.onstop=null;recorder.stream.getTracks().forEach(t=>t.stop());recorder.stop();recorder=null;clearInterval(recTimer)}if(trans.url)URL.revokeObjectURL(trans.url);trans=null;render()};
    $('#tsave').onclick=()=>{const t=ta.value.trim();if(t.length<20)return toast('La transcripción está vacía o es muy corta.');addMat(trans.name,'audio',t);if(trans.url)URL.revokeObjectURL(trans.url);trans=null;toast('Transcripción guardada como material.');render()}}}
  if(v==='textos'){$$('[data-open]').forEach(b=>b.onclick=()=>{openId=st.cur=b.dataset.open;delArm=null;save();render();$('#detail')?.scrollIntoView({behavior:'smooth'})});
-  $$('[data-del]').forEach(b=>b.onclick=()=>{const id=b.dataset.del;if(delArm!==id){delArm=id;return render()}st.mats=st.mats.filter(m=>m.id!==id);delete st.out[id];if(st.cur===id)st.cur=st.mats[0]?.id||null;if(openId===id)openId=null;delArm=null;save();render()});
+  $$('[data-del]').forEach(b=>b.onclick=()=>{const id=b.dataset.del;if(delArm!==id){delArm=id;return render()}st.mats=st.mats.filter(m=>m.id!==id);delete st.out[id];dropAudio(id,'podcast');dropAudio(id,'resumen');if(st.cur===id)st.cur=st.mats[0]?.id||null;if(openId===id)openId=null;delArm=null;save();render()});
   const o=st.mats.find(m=>m.id===openId);
-  const ds=$('#dSave');if(ds)ds.onclick=()=>{o.title=$('#dTitle').value.trim()||o.title;if($('#dText').value!==o.text){o.text=$('#dText').value;const c=(st.out[o.id]||{}).chat;st.out[o.id]=c?{chat:c}:{}}save();toast('Cambios guardados.');render()};
+  const ds=$('#dSave');if(ds)ds.onclick=()=>{o.title=$('#dTitle').value.trim()||o.title;if($('#dText').value!==o.text){o.text=$('#dText').value;dropAudio(o.id,'podcast');dropAudio(o.id,'resumen');const c=(st.out[o.id]||{}).chat;st.out[o.id]=c?{chat:c}:{}}save();toast('Cambios guardados.');render()};
   const dd=$('#dDl');if(dd)dd.onclick=()=>download(o.title+'.txt',o.text);
   const f=$('#ask');if(f)f.onsubmit=async e=>{e.preventDefault();const q=$('#askIn').value.trim();if(!q||busy)return;
    const hist=((st.out[o.id]=st.out[o.id]||{}).chat=(st.out[o.id].chat||[]));hist.push({role:'user',content:q});save();busy='chat';render();
