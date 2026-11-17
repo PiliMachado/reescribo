@@ -1,0 +1,8 @@
+{
+  "name": "reescribo",
+  "version": "0.2.0",
+  "private": true,
+  "description": "reescribo: transformá tus materiales de estudio en nuevas formas de aprender.",
+  "type": "module",
+  "engines": { "node": ">=18" }
+}
