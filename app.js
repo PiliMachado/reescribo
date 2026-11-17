@@ -37,7 +37,7 @@ async function ai(prompt,{json=false,audio=null,mime=null}={}){
  let r;try{r=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,json,audio,mime})})}
  catch(e){throw new Error('No hay conexión con el servidor de reescribo.')}
  let d={};try{d=await r.json()}catch(e){}
- if(!r.ok){const er=new Error(d.error||(r.status===404?'No se encontró /api/ai: la web tiene que estar publicada en Vercel.':'Error '+r.status));er.status=r.status;throw er}
+ if(!r.ok){const er=new Error(d.error||((r.status===404||r.status===405)?'La IA no funciona desde acá: esta web tiene que abrirse desde el link de Vercel (termina en .vercel.app), no desde GitHub Pages.':'Error '+r.status));er.status=r.status;throw er}
  const t=d.text||'';if(!json)return t;
  try{return JSON.parse(t.replace(/^\s*```(?:json)?/i,'').replace(/```\s*$/,'').trim())}catch(e){throw new Error('La IA devolvió un formato raro. Probá generar de nuevo.')}
 }
@@ -123,7 +123,7 @@ function pcmWav(bytes,rate){const b=new ArrayBuffer(44),v=new DataView(b),w=(o,s
 const fromB64=s=>{const bin=atob(s),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u};
 function groupLines(lines){const g=[];let c=[],n=0;for(const l of lines){for(const t of l.text.length>450?chunks(l.text):[l.text]){if(n+t.length>450&&c.length){g.push(c);c=[];n=0}c.push({speaker:l.speaker,text:t});n+=t.length}}if(c.length)g.push(c);return g}
 async function ttsRequest(lines){let r;try{r=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tts:{lines}})})}catch(e){throw new Error('No hay conexión con el servidor de reescribo.')}
- let d={};try{d=await r.json()}catch(e){}if(!r.ok){const er=new Error(d.error||'Error '+r.status);er.status=r.status;throw er}return d}
+ let d={};try{d=await r.json()}catch(e){}if(!r.ok){const er=new Error(d.error||((r.status===404||r.status===405)?'El audio no funciona desde acá: abrí la web desde el link de Vercel (.vercel.app).':'Error '+r.status));er.status=r.status;throw er}return d}
 async function makeAudio(kind,lines){if(aud.job)return toast('Ya se está creando un audio, esperá que termine.');
  const id=st.cur,k=id+':'+kind,groups=groupLines(lines);aud.job={k,msg:'Preparando el audio…'};render();
  const set=t=>{aud.job.msg=t;const p=$('#amsg');if(p)p.textContent=t};
