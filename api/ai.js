@@ -37,34 +37,54 @@ export default async function handler(req, res) {
     }
   };
 
-  const model = process.env.GEMINI_MODEL || 'gemini-flash-latest';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const models = [
+    process.env.GEMINI_MODEL,
+    'gemini-flash-latest',
+    'gemini-3.8-flash',
+    'gemini-3.6-flash',
+    'gemini-2.5-flash',
+    'gemini-flash-lite-latest',
+    'gemini-2.5-flash-lite'
+  ].filter((m, i, a) => m && a.indexOf(m) === i);
 
-  try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify(body)
-    });
-    const data = await r.json().catch(() => ({}));
+  let last = 'No se pudo conectar con la IA. Probá de nuevo en un rato.';
+  for (const model of models) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify(body)
+      });
+      const data = await r.json().catch(() => ({}));
 
-    if (!r.ok) {
       if (r.status === 429) {
-        return res.status(429).json({ error: 'Llegamos al límite gratis de la IA por ahora. Esperá un minuto y probá de nuevo.' });
+        last = 'Llegamos al límite gratis de la IA por ahora. Esperá un minuto y probá de nuevo.';
+        continue; // cada modelo tiene su propio límite: probamos el siguiente
       }
-      const msg = (data && data.error && data.error.message) || `Error ${r.status} de la IA.`;
-      return res.status(502).json({ error: msg });
-    }
+      if (r.status === 400 && /api key/i.test(JSON.stringify(data))) {
+        return res.status(500).json({ error: 'La clave GEMINI_API_KEY no es válida. Revisala en Vercel y volvé a desplegar.' });
+      }
+      if (r.status === 403) {
+        return res.status(500).json({ error: 'Google rechazó la clave (403). Revisá que GEMINI_API_KEY sea de AI Studio y esté bien copiada.' });
+      }
+      if (!r.ok) {
+        last = (data && data.error && data.error.message) || `Error ${r.status} de la IA.`;
+        if (r.status === 404 || r.status === 400) continue; // modelo no disponible: probamos el siguiente
+        return res.status(502).json({ error: last });
+      }
 
-    const cand = data.candidates && data.candidates[0];
-    if (!cand) {
-      return res.status(502).json({ error: 'La IA no devolvió respuesta (puede haber sido bloqueada por un filtro). Probá de nuevo.' });
+      const cand = data.candidates && data.candidates[0];
+      const text = ((cand && cand.content && cand.content.parts) || []).map(p => p.text || '').join('');
+      if (!cand || (!text && !audio)) {
+        last = 'La IA no devolvió respuesta (puede haber sido bloqueada por un filtro). Probá de nuevo.';
+        continue;
+      }
+      return res.status(200).json({ text, model });
+    } catch (e) {
+      last = 'No se pudo conectar con la IA. Probá de nuevo en un rato.';
     }
-    const text = ((cand.content && cand.content.parts) || []).map(p => p.text || '').join('');
-    return res.status(200).json({ text });
-  } catch (e) {
-    return res.status(502).json({ error: 'No se pudo conectar con la IA. Probá de nuevo en un rato.' });
   }
+  return res.status(/límite/.test(last) ? 429 : 502).json({ error: last });
 }
 
 // ---------- Texto a voz: crea audio real (WAV) con las voces de Gemini ----------
